@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Build outputs
+frontend/dist/
+build/
+*.egg-info/
+.eggs/
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs & databases
+*.log
+npm-debug.log*
+*.sqlite
+*.sqlite3
+*.db
+
+# Vite
+frontend/.vite/
+
+# Coverage & test caches
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
