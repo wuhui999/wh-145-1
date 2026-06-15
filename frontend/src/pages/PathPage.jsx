@@ -312,6 +312,7 @@ const PathPage = () => {
                     <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12 }}>
                       <Checkbox 
                         checked={selectedOrders.includes(item.id)}
+                        onChange={() => handleOrderSelect(item.id)}
                         onClick={(e) => e.stopPropagation()}
                       />
                       <div style={{ flex: 1 }}>

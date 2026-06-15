@@ -511,8 +511,6 @@ def suggest_path(
             models.WorkOrder.status.in_(["pending", "assigned"])
         ).all()
 
-    priority_weight = {"urgent": 4, "high": 3, "normal": 2, "low": 1}
-
     def calc_distance(lat1, lng1, lat2, lng2):
         R = 6371
         dlat = math.radians(lat2 - lat1)
@@ -521,70 +519,123 @@ def suggest_path(
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
         return R * c
 
-    points = []
+    cabinet_map = {}
     for order in orders:
         cabinet = order.cabinet
         if not cabinet:
             continue
-        dist = calc_distance(origin_lat, origin_lng, cabinet.latitude, cabinet.longitude)
-        est_time = int(dist / 0.5)
+        cab_key = cabinet.id
+        if cab_key not in cabinet_map:
+            cabinet_map[cab_key] = {
+                "cabinet": cabinet,
+                "orders": [],
+                "max_priority_weight": 0,
+                "min_sla_hours_left": float('inf')
+            }
+        priority_weight = {"urgent": 100, "high": 50, "normal": 20, "low": 5}.get(order.priority, 20)
+        entry = cabinet_map[cab_key]
+        entry["orders"].append(order)
+        if priority_weight > entry["max_priority_weight"]:
+            entry["max_priority_weight"] = priority_weight
 
-        point = schemas.PathPoint(
-            order_id=order.id,
-            order_no=order.order_no,
-            cabinet_name=cabinet.name,
-            address=cabinet.address,
-            latitude=cabinet.latitude,
-            longitude=cabinet.longitude,
-            type=order.type,
-            priority=order.priority,
-            distance=round(dist, 2),
-            estimated_time=est_time
-        )
-        points.append(point)
+        if order.sla_deadline:
+            hours_left = (order.sla_deadline - datetime.utcnow()).total_seconds() / 3600
+            if hours_left < entry["min_sla_hours_left"]:
+                entry["min_sla_hours_left"] = hours_left
+        else:
+            entry["min_sla_hours_left"] = 999
 
-    def heuristic_sort(points_list):
+    cab_points = []
+    for cab_key, entry in cabinet_map.items():
+        cabinet = entry["cabinet"]
+        cab_points.append({
+            "cabinet_id": cabinet.id,
+            "cabinet": cabinet,
+            "latitude": cabinet.latitude,
+            "longitude": cabinet.longitude,
+            "priority_weight": entry["max_priority_weight"],
+            "sla_hours_left": entry["min_sla_hours_left"],
+            "orders": entry["orders"]
+        })
+
+    def heuristic_sort(cab_list):
         current_lat, current_lng = origin_lat, origin_lng
-        sorted_points = []
-        remaining = points_list[:]
+        sorted_cabs = []
+        remaining = cab_list[:]
 
         while remaining:
             best_idx = 0
             best_score = float('-inf')
 
-            for i, p in enumerate(remaining):
-                dist = calc_distance(current_lat, current_lng, p.latitude, p.longitude)
-                p_weight = priority_weight.get(p.priority, 1)
-                score = p_weight * 10 - dist / 2
+            for i, cp in enumerate(remaining):
+                dist = calc_distance(current_lat, current_lng, cp["latitude"], cp["longitude"])
+                dist_km = max(dist, 0.1)
+                pw = cp["priority_weight"]
+
+                sla_bonus = 0
+                if cp["sla_hours_left"] < 2:
+                    sla_bonus = 80
+                elif cp["sla_hours_left"] < 8:
+                    sla_bonus = 40
+                elif cp["sla_hours_left"] < 24:
+                    sla_bonus = 15
+
+                score = pw + sla_bonus - dist_km * 3
 
                 if score > best_score:
                     best_score = score
                     best_idx = i
 
-            next_point = remaining.pop(best_idx)
-            sorted_points.append(next_point)
-            current_lat, current_lng = next_point.latitude, next_point.longitude
+            next_cab = remaining.pop(best_idx)
+            sorted_cabs.append(next_cab)
+            current_lat, current_lng = next_cab["latitude"], next_cab["longitude"]
 
-        return sorted_points
+        return sorted_cabs
 
-    sorted_points = heuristic_sort(points)
+    sorted_cabs = heuristic_sort(cab_points)
+
+    result_points = []
+    cumulative_dist = 0
+    prev_lat, prev_lng = origin_lat, origin_lng
+
+    for cp in sorted_cabs:
+        segment_dist = calc_distance(prev_lat, prev_lng, cp["latitude"], cp["longitude"])
+        cumulative_dist += segment_dist
+        segment_time = int(segment_dist / 0.5)
+
+        for order in cp["orders"]:
+            point = schemas.PathPoint(
+                order_id=order.id,
+                order_no=order.order_no,
+                cabinet_name=cp["cabinet"].name,
+                address=cp["cabinet"].address,
+                latitude=cp["cabinet"].latitude,
+                longitude=cp["cabinet"].longitude,
+                type=order.type,
+                priority=order.priority,
+                distance=round(segment_dist, 2),
+                estimated_time=segment_time
+            )
+            result_points.append(point)
+
+        prev_lat, prev_lng = cp["latitude"], cp["longitude"]
 
     total_dist = 0
     total_time = 0
-    prev_lat, prev_lng = origin_lat, origin_lng
-    for p in sorted_points:
-        d = calc_distance(prev_lat, prev_lng, p.latitude, p.longitude)
+    prev_lat2, prev_lng2 = origin_lat, origin_lng
+    for p in result_points:
+        d = calc_distance(prev_lat2, prev_lng2, p.latitude, p.longitude)
         total_dist += d
         total_time += int(d / 0.5)
         total_time += 15
-        prev_lat, prev_lng = p.latitude, p.longitude
+        prev_lat2, prev_lng2 = p.latitude, p.longitude
 
     return schemas.PathSuggestion(
         origin_lat=origin_lat,
         origin_lng=origin_lng,
         total_distance=round(total_dist, 2),
         total_estimated_time=total_time,
-        points=sorted_points
+        points=result_points
     )
 
 
